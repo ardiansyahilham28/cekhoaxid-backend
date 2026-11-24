@@ -88,6 +88,19 @@ def _load_model():
     if _state["model"] is not None or _state["model_error"] is not None:
         return
     try:
+        model_dir = Path(MODEL_PATH)
+        if not (model_dir / "config.json").exists():
+            # Deploy dari GitHub (mis. Altare) tidak menjalankan
+            # entrypoint.sh, jadi model v4 diunduh dari Hugging Face Hub
+            # (repo publik hamsyah/cekhoaxid-v4, tanpa token) saat start.
+            print(
+                f"Model tidak ditemukan di {MODEL_PATH}; "
+                "mengunduh dari hamsyah/cekhoaxid-v4 ...",
+                flush=True,
+            )
+            from huggingface_hub import snapshot_download
+
+            snapshot_download("hamsyah/cekhoaxid-v4", local_dir=str(model_dir))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
         # num_labels=2 eksplisit: config v1 salah menyimpan 5.
@@ -105,8 +118,8 @@ def _require_model():
         raise HTTPException(
             status_code=503,
             detail=f"Model belum termuat ({MODEL_PATH}): {_state['model_error']}. "
-            "Salin folder model v4 dari Drive (MyDrive/CekHoaxID/models_v4/indobert) ke ./models/indobert "
-            "atau atur env CEKHOAX_MODEL_PATH.",
+            "Pastikan model v4 tersedia di folder itu, atau biarkan backend "
+            "mengunduhnya otomatis dari hamsyah/cekhoaxid-v4 di Hugging Face Hub.",
         )
     return _state["model"], _state["tokenizer"], _state["device"]
 
