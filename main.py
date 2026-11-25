@@ -51,7 +51,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = os.environ.get("CEKHOAX_MODEL_PATH", str(BASE_DIR / "models" / "indobert"))
-CORPUS_PATH = os.environ.get("CEKHOAX_CORPUS_PATH", str(BASE_DIR / "reference_corpus.jsonl"))
+CORPUS_PATH = os.environ.get("CEKHOAX_CORPUS_PATH", str(BASE_DIR / "claims_corpus.jsonl"))
 EMBEDDING_MODEL_NAME = os.environ.get("CEKHOAX_EMBEDDING_MODEL", "")
 UNCERTAINTY_THRESHOLD = float(os.environ.get("CEKHOAX_UNCERTAINTY_THRESHOLD", "0.60"))
 MAX_LEN = 256
@@ -67,7 +67,7 @@ BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-app = FastAPI(title="CekHoax ID API", version="0.2.0")
+app = FastAPI(title="CekHoax ID API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -116,6 +116,7 @@ class PredictUrlResponse(BaseModel):
 class SimilarRequest(BaseModel):
     text: str = Field(..., min_length=1)
     top_k: int = Field(5, ge=1, le=20)
+    min_score: float = Field(0.70, ge=0.0, le=1.0)
 
 
 class SimilarItem(BaseModel):
@@ -395,20 +396,25 @@ def predict_url(req: PredictUrlRequest):
 
 def _mean_pool_embedding(texts):
     """Embedding dari encoder IndoBERT (mean pooling). Dipakai bila tidak ada
-    sentence-transformers / CEKHOAX_EMBEDDING_MODEL."""
+    sentence-transformers / CEKHOAX_EMBEDDING_MODEL. Diproses per batch 32
+    agar korpus 1000 klaim tidak meledak di memori CPU."""
     model, tokenizer, device = _require_model()
     encoder = model.base_model
-    inputs = tokenizer(
-        texts, return_tensors="pt", truncation=True, max_length=MAX_LEN, padding=True
-    ).to(device)
-    with torch.no_grad():
-        hidden = encoder(**inputs).last_hidden_state
-    mask = inputs["attention_mask"].unsqueeze(-1).float()
-    summed = (hidden * mask).sum(dim=1)
-    counts = mask.sum(dim=1).clamp(min=1e-9)
-    emb = summed / counts
-    emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-    return emb.cpu().numpy()
+    out = []
+    for start in range(0, len(texts), 32):
+        batch = texts[start : start + 32]
+        inputs = tokenizer(
+            batch, return_tensors="pt", truncation=True, max_length=MAX_LEN, padding=True
+        ).to(device)
+        with torch.no_grad():
+            hidden = encoder(**inputs).last_hidden_state
+        mask = inputs["attention_mask"].unsqueeze(-1).float()
+        summed = (hidden * mask).sum(dim=1)
+        counts = mask.sum(dim=1).clamp(min=1e-9)
+        emb = summed / counts
+        emb = torch.nn.functional.normalize(emb, p=2, dim=1)
+        out.append(emb.cpu().numpy())
+    return np.concatenate(out, axis=0)
 
 
 def _embed(texts):
@@ -462,7 +468,13 @@ def similar(req: SimilarRequest):
     embs = _corpus["embeddings"]
     query_emb = _embed([req.text])[0]
     scores = embs @ query_emb
-    top_idx = np.argsort(-scores)[: req.top_k]
+    # Hanya hasil di atas ambang yang dikembalikan; bila kurang dari 2 hasil,
+    # kembalikan list kosong supaya app menyembunyikan section "klaim mirip"
+    # (satu hasil di atas ambang saja tidak cukup informatif).
+    ranked = np.argsort(-scores)
+    picked = [i for i in ranked if scores[i] >= req.min_score][: req.top_k]
+    if len(picked) < 2:
+        return SimilarResponse(query=req.text, results=[])
     results = [
         SimilarItem(
             text=items[i]["text"],
@@ -472,7 +484,7 @@ def similar(req: SimilarRequest):
             url_klarifikasi=items[i].get("url") or items[i].get("url_klarifikasi"),
             score=float(scores[i]),
         )
-        for i in top_idx
+        for i in picked
     ]
     return SimilarResponse(query=req.text, results=results)
 
