@@ -449,7 +449,15 @@ def _load_corpus():
     if not items:
         raise HTTPException(status_code=503, detail="Reference corpus kosong.")
     _corpus["items"] = items
-    cache = path.with_suffix(".embeddings.npy")
+    # Cache embedding terikat pada file model: bila model diganti (mis. v5),
+    # fingerprint berubah dan embedding dihitung ulang, bukan memakai cache
+    # lama dari model sebelumnya.
+    model_file = Path(MODEL_PATH) / "model.safetensors"
+    fp = "nomodel"
+    if model_file.exists():
+        st = model_file.stat()
+        fp = f"{st.st_size}-{int(st.st_mtime)}"
+    cache = path.with_suffix(f".{fp}.embeddings.npy")
     if cache.exists():
         try:
             _corpus["embeddings"] = np.load(cache)
