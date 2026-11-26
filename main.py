@@ -140,6 +140,7 @@ class BeritaItem(BaseModel):
     tanggal: Optional[str] = None
     url: Optional[str] = None
     ringkasan: Optional[str] = None
+    gambar: Optional[str] = None
     label: str
     confidence: float
 
@@ -545,6 +546,20 @@ def _fetch_feed(url: str, source_name: str):
                 or ""
             )
             ringkasan = _strip_html(desc)[:300]
+            # Gambar thumbnail: enclosure (Antara) > media:content > <img>
+            # di deskripsi. Google News tidak menyediakan gambar.
+            gambar = None
+            enc = entry.find("enclosure")
+            if enc is not None and (enc.get("type") or "").startswith("image/"):
+                gambar = enc.get("url")
+            if not gambar:
+                media = entry.find("{http://search.yahoo.com/mrss/}content")
+                if media is not None:
+                    gambar = media.get("url")
+            if not gambar:
+                m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc or "")
+                if m:
+                    gambar = m.group(1)
             tanggal = _parse_date(
                 entry.findtext("pubDate")
                 or entry.findtext("{http://purl.org/dc/elements/1.1/}date")
@@ -566,6 +581,7 @@ def _fetch_feed(url: str, source_name: str):
                         "tanggal": tanggal,
                         "url": link.strip() or None,
                         "ringkasan": ringkasan or None,
+                        "gambar": gambar or None,
                     }
                 )
     except Exception as e:  # noqa: BLE001 - feed gagal: pakai cache/daftar kosong
@@ -615,6 +631,7 @@ def berita(page: int = 1, limit: int = 10):
             tanggal=it["tanggal"],
             url=it["url"],
             ringkasan=it["ringkasan"],
+            gambar=it.get("gambar"),
             label=classified.get(it["id"], ("tidak_yakin", 0.0))[0],
             confidence=classified.get(it["id"], ("tidak_yakin", 0.0))[1],
         )
